@@ -1,0 +1,39 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 -m py_compile private_assets_frequency/tests/conftest.py)",
+      "Bash(python3 -c \"import numpy, scipy, pandas, statsmodels; print\\('np', numpy.__version__\\); print\\('sp', scipy.__version__\\); print\\('pd', pandas.__version__\\); print\\('sm', statsmodels.__version__\\)\")",
+      "Read(//opt/anaconda3/**)",
+      "Read(//opt/homebrew/**)",
+      "Read(//usr/local/bin/**)",
+      "Bash(python3 -m venv .venv)",
+      "Bash(.venv/bin/python -m pip install --quiet --upgrade pip)",
+      "Bash(.venv/bin/python -V)",
+      "Bash(.venv/bin/python -m pip install --quiet \"numpy>=1.24,<2\" \"scipy>=1.10\" \"pandas>=2.0,<2.2\" \"statsmodels>=0.14\" pytest)",
+      "Bash(.venv/bin/python -m pytest private_assets_frequency/tests -x -q)",
+      "Bash(.venv/bin/python -m pytest private_assets_frequency/tests -q)",
+      "Bash(.venv/bin/python -m pytest private_assets_frequency/tests --tb=no -q)",
+      "Bash(.venv/bin/python -m pytest private_assets_frequency/tests -x --tb=short)",
+      "Bash(.venv/bin/python -m pytest private_assets_frequency/tests/test_ar1_bayesian.py -x --tb=short -q)",
+      "Bash(.venv/bin/python -m pytest private_assets_frequency/tests --tb=short -q)",
+      "Bash(.venv/bin/python -m pytest private_assets_frequency/tests/test_multivariate.py private_assets_frequency/tests/test_factor_model.py -x --tb=short -q)",
+      "Bash(.venv/bin/python -m pytest private_assets_frequency/tests/test_chow_lin.py::TestRoundTrip -v)",
+      "Bash(.venv/bin/python -m pytest private_assets_frequency/tests/test_kalman.py::TestRoundTrip private_assets_frequency/tests/test_simulation.py::TestSimulateAggregation -v)",
+      "Bash(.venv/bin/python -m pytest private_assets_frequency/tests/test_pipeline_pe.py private_assets_frequency/tests/test_pipeline_hf.py private_assets_frequency/tests/test_pipeline_credit.py --tb=short -q)",
+      "Bash(.venv/bin/python -m pytest private_assets_frequency/tests/test_pipeline_pe.py --tb=short -q)",
+      "Bash(.venv/bin/python -m pytest private_assets_frequency/tests/test_uncertainty_mode.py --tb=short -q)",
+      "Bash(.venv/bin/python -c \"import pptx; print\\(pptx.__version__\\)\")",
+      "Bash(.venv/bin/python -m pip install --quiet python-pptx)",
+      "Bash(.venv/bin/python -m pip install --quiet matplotlib)",
+      "Bash(.venv/bin/python -c \"import matplotlib; print\\(matplotlib.__version__\\)\")",
+      "Bash(.venv/bin/python build_quant_methodology.py)",
+      "Bash(.venv/bin/python -c \"import nbformat, jupyter_client; print\\(nbformat.__version__\\)\")",
+      "Bash(.venv/bin/python -m pip install --quiet nbformat ipykernel jupyter-client)",
+      "Bash(.venv/bin/python -m pip install --quiet nbformat nbconvert ipykernel jupyter-client)",
+      "Bash(.venv/bin/python -c \"import nbformat, nbconvert; print\\('nbformat', nbformat.__version__, 'nbconvert', nbconvert.__version__\\)\")",
+      "Bash(.venv/bin/python -m ipykernel install --user --name paf-venv --display-name \"Python \\(paf-venv\\)\")",
+      "Bash(.venv/bin/python -m jupyter nbconvert --to notebook --execute --inplace --ExecutePreprocessor.timeout=600 --ExecutePreprocessor.kernel_name=paf-venv docs/tutorial.ipynb)",
+      "Bash(.venv/bin/python build_tutorial_notebook.py)"
+    ]
+  }
+}
