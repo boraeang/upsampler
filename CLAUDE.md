@@ -32,3 +32,13 @@ Read it in full before implementing anything. It contains:
 
 Phase: [UPDATE THIS AS YOU PROGRESS]
 Next module to build: [UPDATE THIS]
+
+## Current Task
+
+Implementing a new pluggable smoothing model: RudinReparamSmoothing.
+Spec: docs/claude_code_prompt_rudin_unsmoothing.md
+It must conform to the SmoothingModel protocol in core/protocols.py
+and register under key 'rudin_reparam'.
+
+Prerequisite: core/protocols.py, core/config.py, and the registry
+must already exist (built in earlier phases).

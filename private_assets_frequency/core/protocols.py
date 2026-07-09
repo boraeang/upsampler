@@ -59,6 +59,7 @@ class SmoothingModelKind(str, Enum):
     THRESHOLD_AR1 = "threshold_ar1"
     NO_SMOOTHING = "no_smoothing"
     GELTNER_CLASSIC = "geltner_classic"
+    RUDIN_REPARAM = "rudin_reparam"
 
 
 class PreprocessingKind(str, Enum):

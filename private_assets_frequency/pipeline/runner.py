@@ -74,6 +74,7 @@ from ..desmoothing.ar1_bayesian import AR1BayesianSmoother
 from ..desmoothing.geltner_classic import GeltnerClassicSmoother
 from ..desmoothing.ma_glm import MAGLMSmoother
 from ..desmoothing.no_smoothing import NoSmoothing
+from ..desmoothing.rudin_reparam import RudinReparamSmoothing
 from ..desmoothing.threshold_ar1 import ThresholdAR1Smoother
 from ..disaggregation.chow_lin import ChowLinDisaggregator, DisaggregationResult
 from ..preprocessing.credit_decomposition import (
@@ -192,6 +193,11 @@ def _make_smoother(config: AssetClassConfig) -> SmoothingModel:
         return NoSmoothing()
     if kind is SmoothingModelKind.GELTNER_CLASSIC:
         return GeltnerClassicSmoother()
+    if kind is SmoothingModelKind.RUDIN_REPARAM:
+        # Reuse ma_lags as the Q selector when supplied; else default to 1
+        # (the paper's preferred order and also the RudinReparamSmoothing default).
+        n_lags = int(config.ma_lags) if config.ma_lags is not None else 1
+        return RudinReparamSmoothing(n_lags=n_lags)
     raise ValueError(f"unknown smoothing model {kind!r}")
 
 
