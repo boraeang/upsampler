@@ -1,0 +1,48 @@
+factor_ticker,category,description
+SP500,equity,S&P 500 — US large-cap equity market
+Russell2000,equity,Russell 2000 — US small-cap equity
+Russell2000_Growth,equity,Russell 2000 Growth — US small-cap growth equity
+NASDAQ,equity,"NASDAQ Composite — tech-heavy US equity, VC proxy"
+MSCI_Europe,equity,MSCI Europe — developed European equity
+STOXX_600,equity,STOXX Europe 600 — broad European equity
+MSCI_Europe_SmallCap,equity,MSCI Europe Small Cap equity
+MSCI_AC_Asia,equity,MSCI All-Country Asia equity
+MSCI_AC_Asia_SmallCap,equity,MSCI All-Country Asia small-cap equity
+MSCI_World,equity,MSCI World — global developed-market equity
+FTSE_Infra,infrastructure,FTSE listed infrastructure index
+SP_Global_Infra,infrastructure,S&P Global Infrastructure — listed infrastructure
+utilities,sector,Utilities sector equity return — infrastructure's regulated-asset analog
+inflation,inflation,"Realized inflation factor (e.g., CPI-linked). PLACEHOLDER — map to a data series"
+Breakeven_10Y,inflation,10-year breakeven inflation (nominal minus TIPS yield); inflation-expectation factor
+Breakeven_5Y,inflation,5-year breakeven inflation — shorter-horizon inflation expectations
+UST_2Y,rates,2-year US Treasury (yield/return) — short-duration rates
+UST_5Y,rates,5-year US Treasury — intermediate-duration rates
+UST_10Y,rates,10-year US Treasury — long-duration rates factor
+rate_duration,rates,Interest-rate duration factor (sensitivity to rate changes). PLACEHOLDER — map to a data series
+rates,rates,Generic interest-rate factor. PLACEHOLDER — map to a data series
+HY_Bond_Index,credit,US high-yield corporate bond total return
+HY_OAS,credit,High-yield option-adjusted spread — credit-risk premium
+IG_Corp_Index,credit,Investment-grade corporate bond index
+Lev_Loan_Index,credit,Leveraged (senior secured) loan index
+Default_Rate,credit,Corporate default-rate series — credit-cycle factor
+credit_spread,credit,Generic credit-spread factor (spread over Treasuries). PLACEHOLDER — map to a data series
+Distressed_Index,credit,Distressed-debt bond index
+M_and_A_Spread,event,Merger-arbitrage deal spread — event-driven factor
+reit_market,real_estate,Listed REIT market return. PLACEHOLDER — map to a data series
+FTSE_NAREIT,real_estate,FTSE NAREIT All Equity REITs — listed US real estate
+GDP_Growth,macro,Real GDP growth — macro/real-economy factor
+HML,style,High-minus-low (Fama-French value factor)
+SMB,style,Small-minus-big (Fama-French size factor). Note: appears as 'smb' in HF preset — normalize casing
+MOM,style,Momentum factor (winners minus losers)
+VIX,volatility,CBOE equity-volatility index — equity risk/vol factor
+MOVE,volatility,ICE BofA MOVE index — bond-market (rates) volatility factor
+vol,volatility,Generic volatility exposure factor. PLACEHOLDER — map to a data series
+DXY,fx,US Dollar Index — broad USD FX factor
+fx,fx,Generic currency/FX factor. PLACEHOLDER — map to a data series
+GSCI,commodity,S&P GSCI — broad commodity index
+commodities,commodity,Generic commodity factor. PLACEHOLDER — map to a data series
+SG_Trend,trend,SG Trend Index — trend-following/CTA factor
+trend_equity,trend,Trend-following signal in equities. PLACEHOLDER — map to a data series
+trend_rates,trend,Trend-following signal in rates. PLACEHOLDER — map to a data series
+trend_fx,trend,Trend-following signal in currencies. PLACEHOLDER — map to a data series
+trend_commodities,trend,Trend-following signal in commodities. PLACEHOLDER — map to a data series

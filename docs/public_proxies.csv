@@ -1,0 +1,20 @@
+strategy,public_proxy,description
+us_large_buyout,Russell 2000 (leveraged),"US small-cap equity index, leveraged to proxy buyout's ~2x-declining-to-1x leverage"
+us_early_venture,Russell 2000 Growth,US small-cap growth equity index — closest liquid analog to unleveraged VC
+us_late_venture,Russell 2000 Growth,US small-cap growth equity index — closest liquid analog to unleveraged VC
+us_mezzanine,ICE BofA High Yield,US high-yield corporate bond index; proxies mezzanine's credit/subordinated-debt exposure
+us_distressed,ICE BofA Distressed,Distressed-tier subset of high-yield bonds; higher-spread credit proxy
+europe_buyout,MSCI Europe,Large/mid-cap European developed-market equity index
+europe_venture,MSCI Europe Small Cap,European small-cap equity index
+asia_buyout,MSCI AC Asia,All-Country Asia equity index (developed + emerging)
+asia_venture,MSCI AC Asia Small Cap,All-Country Asia small-cap equity index
+core_infrastructure,FTSE Global Core Infrastructure 50/50,"Listed global infrastructure index, capped 50/50 across sub-sectors"
+opportunistic_infrastructure,S&P Global Infrastructure,"Listed global infrastructure index, higher equity beta tilt"
+direct_lending,Morningstar LSTA US Leveraged Loan 100,Index of the 100 largest US leveraged (senior secured) loans
+private_debt_senior,Bloomberg US Aggregate Credit,Broad US investment-grade corporate/credit bond index
+equity_long_short,HFRI Equity Hedge Index,Hedge-fund-research index of equity long/short managers
+global_macro,HFRI Macro Index,HFR index of global macro hedge funds
+event_driven,HFRI Event-Driven Index,"HFR index of event-driven (M&A, restructuring) hedge funds"
+relative_value,HFRI Relative Value Index,HFR index of relative-value / arbitrage hedge funds
+managed_futures,SG Trend Index,Societe Generale index tracking major trend-following CTAs
+us_core_real_estate,FTSE NAREIT All Equity REITs,Listed US equity REIT index (daily-priced analog to NCREIF)
