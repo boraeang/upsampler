@@ -189,6 +189,10 @@ _REQUIRES_LAMBDA: frozenset[str] = frozenset(
 )
 _REQUIRES_THRESHOLD: frozenset[str] = frozenset({SmoothingModelKind.THRESHOLD_AR1.value})
 _REQUIRES_MA: frozenset[str] = frozenset({SmoothingModelKind.MA_GLM.value})
+# Factor-free models: no beta_priors required (pure time-series desmoothers).
+_FACTOR_FREE: frozenset[str] = frozenset(
+    {SmoothingModelKind.NO_SMOOTHING.value, SmoothingModelKind.OKUNEV_WHITE.value}
+)
 
 
 def _coerce_str_enum(
@@ -343,8 +347,9 @@ class AssetClassConfig:
                     f"smoothing_model={model!r} requires ma_lags >= 1, got {self.ma_lags!r}."
                 )
 
-        # Beta priors must be a non-empty mapping for any Bayesian model
-        if model != SmoothingModelKind.NO_SMOOTHING.value and not self.beta_priors:
+        # Beta priors must be a non-empty mapping for any factor-based model.
+        # Factor-free desmoothers (no_smoothing, okunev_white) are exempt.
+        if model not in _FACTOR_FREE and not self.beta_priors:
             raise ValueError(
                 f"smoothing_model={model!r} requires non-empty beta_priors."
             )

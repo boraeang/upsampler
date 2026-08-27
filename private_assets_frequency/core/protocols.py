@@ -60,6 +60,7 @@ class SmoothingModelKind(str, Enum):
     NO_SMOOTHING = "no_smoothing"
     GELTNER_CLASSIC = "geltner_classic"
     RUDIN_REPARAM = "rudin_reparam"
+    OKUNEV_WHITE = "okunev_white"
 
 
 class PreprocessingKind(str, Enum):

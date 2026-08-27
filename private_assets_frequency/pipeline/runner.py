@@ -74,6 +74,7 @@ from ..desmoothing.ar1_bayesian import AR1BayesianSmoother
 from ..desmoothing.geltner_classic import GeltnerClassicSmoother
 from ..desmoothing.ma_glm import MAGLMSmoother
 from ..desmoothing.no_smoothing import NoSmoothing
+from ..desmoothing.okunev_white import OkunevWhiteSmoothing
 from ..desmoothing.rudin_reparam import RudinReparamSmoothing
 from ..desmoothing.threshold_ar1 import ThresholdAR1Smoother
 from ..disaggregation.chow_lin import ChowLinDisaggregator, DisaggregationResult
@@ -198,6 +199,11 @@ def _make_smoother(config: AssetClassConfig) -> SmoothingModel:
         # (the paper's preferred order and also the RudinReparamSmoothing default).
         n_lags = int(config.ma_lags) if config.ma_lags is not None else 1
         return RudinReparamSmoothing(n_lags=n_lags)
+    if kind is SmoothingModelKind.OKUNEV_WHITE:
+        # Pure time-series unsmoother (no factors). Reuse ma_lags as the depth
+        # selector when supplied; else default to 4 (the paper's value).
+        n_lags = int(config.ma_lags) if config.ma_lags is not None else 4
+        return OkunevWhiteSmoothing(n_lags=n_lags)
     raise ValueError(f"unknown smoothing model {kind!r}")
 
 

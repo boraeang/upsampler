@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(.venv/bin/python --version)",
+      "Bash(.venv/bin/python -m pytest private_assets_frequency/tests/test_geltner_classic.py -q)",
+      "Bash(.venv/bin/python *)"
+    ]
+  }
+}
