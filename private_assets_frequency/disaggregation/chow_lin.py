@@ -45,11 +45,12 @@ import numpy as np
 import pandas as pd
 
 from ..core.protocols import AggregationType, DisaggregationMethod
-from ..utils.returns import aggregate_returns
+from ..utils.returns import aggregate_returns, aggregate_returns_by_blocks
 from .aggregation import (
     aggregation_matrix,
     ar1_covariance,
     from_workspace,
+    irregular_aggregation_matrix,
     litterman_covariance,
     random_walk_covariance,
     to_workspace,
@@ -164,22 +165,32 @@ class ChowLinDisaggregator:
         self,
         low_frequency: pd.Series,
         high_frequency_indicators: pd.DataFrame,
-        ratio: int,
+        ratio: int | None = None,
         *,
+        block_sizes: np.ndarray | list[int] | None = None,
         high_frequency_index: pd.DatetimeIndex | None = None,
     ) -> DisaggregationResult:
         """Disaggregate ``low_frequency`` to the high frequency of ``indicators``.
+
+        Exactly one of ``ratio`` (uniform blocks) or ``block_sizes`` (irregular
+        blocks) must be supplied.
 
         Parameters
         ----------
         low_frequency
             Low-frequency series — typically a desmoothed quarterly PE return.
         high_frequency_indicators
-            Indicator (factor) returns at the target high frequency. The
-            number of rows must equal ``len(low_frequency) * ratio``.
+            Indicator (factor) returns at the target high frequency. The number
+            of rows must equal ``len(low_frequency) * ratio`` (uniform) or
+            ``sum(block_sizes)`` (irregular).
         ratio
-            Number of high-frequency periods per low-frequency period
-            (e.g. 3 for quarterly→monthly).
+            Number of high-frequency periods per low-frequency period (e.g. 3
+            for quarterly→monthly). Mutually exclusive with ``block_sizes``.
+        block_sizes
+            Per-low-frequency-period count of high-frequency observations, for
+            irregular calendars (e.g. business days per month in monthly→daily).
+            Length must equal ``len(low_frequency)``. Mutually exclusive with
+            ``ratio``.
         high_frequency_index
             Optional explicit index for the output. Defaults to
             ``high_frequency_indicators.index``.
@@ -188,8 +199,19 @@ class ChowLinDisaggregator:
         -------
         DisaggregationResult
         """
-        y_lf_pd, X_hf, hf_index, indicator_names = self._validate_and_prepare(
-            low_frequency, high_frequency_indicators, ratio, high_frequency_index
+        (
+            y_lf_pd,
+            X_hf,
+            hf_index,
+            indicator_names,
+            C,
+            block_sizes_norm,
+        ) = self._validate_and_prepare(
+            low_frequency,
+            high_frequency_indicators,
+            ratio,
+            block_sizes,
+            high_frequency_index,
         )
         n_lf = len(y_lf_pd)
         n_hf = X_hf.shape[0]
@@ -208,7 +230,6 @@ class ChowLinDisaggregator:
         if self.use_intercept:
             X_hf_w = np.hstack([X_hf_w, np.ones((n_hf, 1))])
 
-        C = aggregation_matrix(n_lf, ratio)
         X_lf_w = C @ X_hf_w  # aggregated indicator at LF
 
         # Method dispatch
@@ -241,13 +262,13 @@ class ChowLinDisaggregator:
         agg_err_workspace = float(np.max(np.abs(agg_back - y_lf_w)))
 
         # Round-trip in *return* space — even tighter check for the user
-        if self.aggregation is AggregationType.MULTIPLICATIVE:
+        if block_sizes_norm is None:
             agg_back_returns = aggregate_returns(
-                y_hf_arr, ratio, method=AggregationType.MULTIPLICATIVE
+                y_hf_arr, int(ratio), method=self.aggregation
             )
         else:
-            agg_back_returns = aggregate_returns(
-                y_hf_arr, ratio, method=AggregationType.ADDITIVE
+            agg_back_returns = aggregate_returns_by_blocks(
+                y_hf_arr, block_sizes_norm, method=self.aggregation
             )
         agg_err_return = float(np.max(np.abs(agg_back_returns - y_lf_pd.to_numpy())))
 
@@ -262,12 +283,14 @@ class ChowLinDisaggregator:
             "alpha": alpha,
             "n_low_frequency": n_lf,
             "n_high_frequency": n_hf,
-            "ratio": ratio,
+            "ratio": int(ratio) if block_sizes_norm is None else None,
             "aggregation_error_workspace": agg_err_workspace,
             "aggregation_error_return_space": agg_err_return,
             "indicator_names": indicator_names,
             "use_intercept": self.use_intercept,
         }
+        if block_sizes_norm is not None:
+            diagnostics["block_sizes"] = [int(s) for s in block_sizes_norm]
         if rho_hat is not None:
             diagnostics["rho"] = float(rho_hat)
 
@@ -374,9 +397,10 @@ class ChowLinDisaggregator:
         self,
         low_frequency: pd.Series,
         high_frequency_indicators: pd.DataFrame,
-        ratio: int,
+        ratio: int | None,
+        block_sizes: np.ndarray | list[int] | None,
         high_frequency_index: pd.DatetimeIndex | None,
-    ) -> tuple[pd.Series, np.ndarray, pd.DatetimeIndex, list[str]]:
+    ) -> tuple[pd.Series, np.ndarray, pd.DatetimeIndex, list[str], np.ndarray, np.ndarray | None]:
         if not isinstance(low_frequency, pd.Series):
             raise TypeError(
                 f"low_frequency must be a Series, got {type(low_frequency).__name__}"
@@ -387,14 +411,32 @@ class ChowLinDisaggregator:
             raise ValueError("low_frequency contains NaN.")
         if high_frequency_indicators.isna().any().any():
             raise ValueError("high_frequency_indicators contains NaN.")
-        if not isinstance(ratio, (int, np.integer)) or ratio < 2:
-            raise ValueError(f"ratio must be an integer >= 2, got {ratio!r}")
+        if (ratio is None) == (block_sizes is None):
+            raise ValueError("provide exactly one of `ratio` or `block_sizes`.")
+
         n_lf = len(low_frequency)
-        n_hf_expected = n_lf * int(ratio)
+        if block_sizes is None:
+            if not isinstance(ratio, (int, np.integer)) or ratio < 2:
+                raise ValueError(f"ratio must be an integer >= 2, got {ratio!r}")
+            n_hf_expected = n_lf * int(ratio)
+            C = aggregation_matrix(n_lf, int(ratio))
+            block_sizes_norm: np.ndarray | None = None
+        else:
+            sizes = np.asarray(block_sizes, dtype=int)
+            if sizes.ndim != 1 or sizes.size != n_lf:
+                raise ValueError(
+                    f"block_sizes must be 1-D of length n_lf={n_lf}, got shape {sizes.shape}."
+                )
+            if (sizes < 1).any():
+                raise ValueError("block_sizes entries must all be >= 1.")
+            n_hf_expected = int(sizes.sum())
+            C = irregular_aggregation_matrix(sizes)
+            block_sizes_norm = sizes
+
         if len(high_frequency_indicators) != n_hf_expected:
             raise ValueError(
                 f"high_frequency_indicators has {len(high_frequency_indicators)} rows, "
-                f"expected {n_hf_expected} (= n_lf {n_lf} × ratio {ratio})."
+                f"expected {n_hf_expected}."
             )
         hf_index = (
             high_frequency_index
@@ -413,6 +455,8 @@ class ChowLinDisaggregator:
             X_hf,
             hf_index,
             list(high_frequency_indicators.columns),
+            C,
+            block_sizes_norm,
         )
 
 

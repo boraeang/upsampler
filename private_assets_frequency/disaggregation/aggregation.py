@@ -48,6 +48,30 @@ def aggregation_matrix(n_low: int, ratio: int) -> np.ndarray:
     return _agg_matrix_base(n_low, ratio)
 
 
+def irregular_aggregation_matrix(block_sizes: np.ndarray | list[int]) -> np.ndarray:
+    """Block-summing aggregation matrix ``C`` with *variable* block sizes.
+
+    Row ``b`` sums the ``block_sizes[b]`` consecutive high-frequency columns of
+    its block. Shape ``(len(block_sizes), sum(block_sizes))``. This is the
+    irregular-calendar analogue of :func:`aggregation_matrix`, used by Stage 3
+    monthly→daily disaggregation where each month spans a different number of
+    business days.
+    """
+    sizes = np.asarray(block_sizes, dtype=int)
+    if sizes.ndim != 1 or sizes.size == 0:
+        raise ValueError("block_sizes must be a non-empty 1-D sequence.")
+    if (sizes < 1).any():
+        raise ValueError("block_sizes entries must all be >= 1.")
+    n_low = sizes.size
+    n_high = int(sizes.sum())
+    C = np.zeros((n_low, n_high))
+    start = 0
+    for b, sz in enumerate(sizes):
+        C[b, start : start + int(sz)] = 1.0
+        start += int(sz)
+    return C
+
+
 # ──────────────────────────────────────────────────────────────────
 # Residual covariance structures (returned at unit σ²)
 # ──────────────────────────────────────────────────────────────────
@@ -142,6 +166,7 @@ __all__ = [
     "aggregation_matrix",
     "ar1_covariance",
     "from_workspace",
+    "irregular_aggregation_matrix",
     "litterman_covariance",
     "random_walk_covariance",
     "to_workspace",

@@ -29,7 +29,11 @@ from ..core.protocols import (
     StageValidationResult,
     ValidationStatus,
 )
-from ..utils.returns import aggregate_returns, realised_volatility
+from ..utils.returns import (
+    aggregate_returns,
+    aggregate_returns_by_blocks,
+    realised_volatility,
+)
 
 
 def validate_stage_1_to_2(
@@ -131,8 +135,9 @@ def validate_stage_2_to_3(
 def validate_stage_3_to_4(
     low_frequency: pd.Series,
     high_frequency: pd.Series,
-    ratio: int,
+    ratio: int | None = None,
     *,
+    block_sizes: np.ndarray | list[int] | None = None,
     aggregation: AggregationType | str = AggregationType.MULTIPLICATIVE,
     tolerance: float = 1e-10,
 ) -> StageValidationResult:
@@ -140,8 +145,19 @@ def validate_stage_3_to_4(
 
     This is the spec's tightest gate: a failure here means downstream Stage 4
     cannot be trusted to preserve the input low-frequency cumulative return.
+
+    Provide exactly one of ``ratio`` (uniform blocks, e.g. 3 for
+    quarterly→monthly) or ``block_sizes`` (irregular blocks, e.g. business days
+    per month for monthly→daily).
     """
-    aggregated = aggregate_returns(high_frequency, ratio=ratio, method=aggregation)
+    if (ratio is None) == (block_sizes is None):
+        raise ValueError("provide exactly one of `ratio` or `block_sizes`.")
+    if block_sizes is not None:
+        aggregated = aggregate_returns_by_blocks(
+            high_frequency, block_sizes, method=aggregation
+        )
+    else:
+        aggregated = aggregate_returns(high_frequency, ratio=ratio, method=aggregation)
     if isinstance(aggregated, pd.Series):
         agg_arr = aggregated.to_numpy()
     else:
@@ -172,7 +188,16 @@ def validate_stage_3_to_4(
         status=status,
         checks={"round_trip_within_tol": passed},
         messages=msgs,
-        metadata={"max_error": err, "tolerance": tolerance, "ratio": int(ratio)},
+        metadata={
+            "max_error": err,
+            "tolerance": tolerance,
+            "ratio": int(ratio) if ratio is not None else None,
+            "block_sizes": (
+                [int(s) for s in np.asarray(block_sizes, dtype=int)]
+                if block_sizes is not None
+                else None
+            ),
+        },
     )
 
 

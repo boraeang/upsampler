@@ -216,6 +216,70 @@ def aggregate_returns(
     return agg
 
 
+def aggregate_returns_by_blocks(
+    returns: np.ndarray | pd.Series | pd.DataFrame,
+    block_sizes: np.ndarray | list[int],
+    *,
+    method: AggregationType | str = AggregationType.MULTIPLICATIVE,
+) -> np.ndarray | pd.Series | pd.DataFrame:
+    """Fold high-frequency returns into a lower-frequency series with *variable* blocks.
+
+    Generalises :func:`aggregate_returns` to irregular block sizes — e.g.
+    monthly→daily aggregation where each month contains a different number of
+    business days. Block ``b`` compounds (or sums) the ``block_sizes[b]``
+    consecutive high-frequency observations starting at ``sum(block_sizes[:b])``.
+
+    Parameters
+    ----------
+    returns
+        High-frequency returns (1-D or 2-D). ``len(returns)`` must equal
+        ``sum(block_sizes)``.
+    block_sizes
+        Per-block counts of high-frequency periods. All entries must be ``>= 1``.
+    method
+        ``AggregationType.MULTIPLICATIVE`` (default) or ``ADDITIVE``. Strings
+        ``"multiplicative"`` / ``"additive"`` are also accepted.
+
+    Returns
+    -------
+    Same container type as the input. Pandas inputs are indexed at the *last*
+    high-frequency date of each block.
+    """
+    method = AggregationType(method) if not isinstance(method, AggregationType) else method
+    sizes = np.asarray(block_sizes, dtype=int)
+    if sizes.ndim != 1 or sizes.size == 0:
+        raise ValueError("block_sizes must be a non-empty 1-D sequence.")
+    if (sizes < 1).any():
+        raise ValueError("block_sizes entries must all be >= 1.")
+
+    arr = _values(returns)
+    if arr.ndim not in (1, 2):
+        raise ValueError(f"returns must be 1-D or 2-D, got ndim={arr.ndim}")
+    n_high = arr.shape[0]
+    if n_high != int(sizes.sum()):
+        raise ValueError(
+            f"returns has {n_high} rows but block_sizes sum to {int(sizes.sum())}."
+        )
+
+    starts = np.zeros(sizes.size, dtype=int)
+    starts[1:] = np.cumsum(sizes)[:-1]
+
+    if method is AggregationType.MULTIPLICATIVE:
+        if (arr <= -1.0).any():
+            raise ValueError("aggregate_returns_by_blocks: input contains values ≤ -1.")
+        agg = np.expm1(np.add.reduceat(np.log1p(arr), starts, axis=0))
+    else:  # ADDITIVE
+        agg = np.add.reduceat(arr, starts, axis=0)
+
+    if isinstance(returns, (pd.Series, pd.DataFrame)):
+        block_end_pos = np.cumsum(sizes) - 1
+        new_index = returns.index[block_end_pos]
+        if isinstance(returns, pd.DataFrame):
+            return pd.DataFrame(agg, index=new_index, columns=returns.columns)
+        return pd.Series(agg, index=new_index, name=returns.name)
+    return agg
+
+
 def aggregation_matrix(n_low: int, ratio: int) -> np.ndarray:
     """Build the temporal aggregation matrix ``C`` of shape ``(n_low, n_low * ratio)``.
 
@@ -378,6 +442,7 @@ def _wrap_like(values, template):
 __all__ = [
     "PERIODS_PER_YEAR",
     "aggregate_returns",
+    "aggregate_returns_by_blocks",
     "aggregation_matrix",
     "annualize_return",
     "annualize_volatility",
