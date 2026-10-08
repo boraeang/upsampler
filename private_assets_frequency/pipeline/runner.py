@@ -69,6 +69,7 @@ from ..core.protocols import (
     UncertaintyMode,
     ValidationStatus,
 )
+from ..daily.calendar import block_sizes_for_months
 from ..daily.kalman import DailyDisaggregationResult, KalmanDailySmoother
 from ..decomposition.factor_model import FactorModel, FactorRegressionResult
 from ..desmoothing.ar1_bayesian import AR1BayesianSmoother
@@ -757,12 +758,33 @@ class FrequencyPipeline:
         # For PE / RE / infra / credit (quarterly native): produce monthly
         # using factor_returns_monthly. For HF (monthly native): produce
         # daily using factor_returns_daily.
-        target_factors, target_index, ratio = self._stage3_target(name, cfg, factor_cols)
+        # Stage 3 spans every native period handed to it: the published rows,
+        # plus any provisional quarters appended by `_extend_desmoothed`.
+        stage3_native_index = (
+            stage1_input.index if provisional_quarters is None else stage1_full.index
+        )
+        target_factors, target_index, ratio, block_sizes = self._stage3_target(
+            name, cfg, factor_cols, stage3_native_index
+        )
         # The Stage 3 disaggregator regresses on indicator columns; we only
         # use the columns referenced in the desmoothed factor model.
         ind_df = target_factors[factor_cols]
         # If carry was decomposed, disaggregate the desmoothed MTM only
         lf_for_disagg = true_returns_extended
+        # Some smoothers (e.g. rudin_reparam, geltner_classic) drop the first
+        # ``n_lags`` low-frequency observations from the reconstructed series.
+        # The Stage 3 indicators are built over the full native span, so trim
+        # the leading high-frequency rows that correspond to the discarded
+        # low-frequency periods to keep the aggregation invariant.
+        n_dropped = len(stage3_native_index) - len(lf_for_disagg)
+        if n_dropped > 0:
+            if block_sizes is None:
+                hf_drop = n_dropped * int(ratio)
+            else:
+                hf_drop = int(np.sum(block_sizes[:n_dropped]))
+                block_sizes = block_sizes[n_dropped:]
+            ind_df = ind_df.iloc[hf_drop:]
+            target_index = target_index[hf_drop:]
         disagg = ChowLinDisaggregator(
             method=self.disaggregation_method,
             aggregation=self.aggregation_type,
@@ -770,6 +792,7 @@ class FrequencyPipeline:
             lf_for_disagg,
             ind_df,
             ratio=ratio,
+            block_sizes=block_sizes,
             high_frequency_index=target_index,
         )
         # Inter-stage 3 → 4 validation runs against the raw Chow-Lin output
@@ -783,6 +806,7 @@ class FrequencyPipeline:
             disagg.low_frequency_input,
             disagg.high_frequency,
             ratio,
+            block_sizes=block_sizes,
             aggregation=self.aggregation_type,
         )
         handler.record_stage_validation(v34)
@@ -923,8 +947,26 @@ class FrequencyPipeline:
         name: str,
         cfg: AssetClassConfig,
         factor_cols: list[str],
-    ) -> tuple[pd.DataFrame, pd.DatetimeIndex, int]:
-        """Return ``(indicator_df, target_index, ratio)`` for Stage 3."""
+        native_index: pd.DatetimeIndex,
+    ) -> tuple[pd.DataFrame, pd.DatetimeIndex, int | None, np.ndarray | None]:
+        """Return ``(indicator_df, target_index, ratio, block_sizes)`` for Stage 3.
+
+        For quarterly-native strategies (PE / RE / infra / credit) the target is
+        monthly with a uniform ``ratio=3`` and ``block_sizes=None``. For HF
+        (monthly-native) the target is daily on a *real* business-day calendar:
+        ``ratio`` is ``None`` and ``block_sizes`` gives the variable number of
+        business days in each month of ``native_index``.
+
+        ``native_index`` is the datetime index of the *actual* low-frequency
+        series being disaggregated (i.e. the observed returns after any
+        ``dropna``), which may be shorter than ``self.returns.index`` when a
+        strategy column contains NaNs. Aligning to it keeps ``block_sizes``
+        (and the uniform ``n_target``) consistent with the low-frequency input.
+        """
+        if not isinstance(native_index, pd.DatetimeIndex):
+            raise TypeError(
+                f"strategy {name!r}: native_index must be a DatetimeIndex."
+            )
         if cfg.frequency is Frequency.QUARTERLY:
             if self.factor_returns_monthly is None:
                 raise ValueError(
@@ -933,38 +975,56 @@ class FrequencyPipeline:
                 )
             target = self.factor_returns_monthly
             ratio = 3
-        elif cfg.frequency is Frequency.MONTHLY:
+            # Ensure required columns are present
+            missing = [c for c in factor_cols if c not in target.columns]
+            if missing:
+                raise KeyError(
+                    f"strategy {name!r}: target-frequency factor returns missing "
+                    f"columns {missing!r}."
+                )
+            # Trim to a multiple of ratio aligned to the native-frequency span
+            n_target = len(native_index) * ratio
+            if len(target) < n_target:
+                raise ValueError(
+                    f"strategy {name!r}: target factor returns have "
+                    f"{len(target)} rows; need at least {n_target}."
+                )
+            target = target.iloc[:n_target]
+            return target, target.index, ratio, None
+
+        if cfg.frequency is Frequency.MONTHLY:
             if self.factor_returns_daily is None:
                 raise ValueError(
                     f"strategy {name!r}: monthly→daily disaggregation "
                     "needs factor_returns_daily."
                 )
             target = self.factor_returns_daily
-            # For monthly→daily Chow-Lin we need a *uniform* ratio. The
-            # production path uses the irregular-block Stage 4 Kalman; for
-            # Stage 3 of HF runs we approximate with ratio=21 and trim.
-            ratio = 21
-        else:
-            raise ValueError(
-                f"strategy {name!r}: unsupported native frequency "
-                f"{cfg.frequency.value!r} for Stage 3."
-            )
-        # Ensure required columns are present
-        missing = [c for c in factor_cols if c not in target.columns]
-        if missing:
-            raise KeyError(
-                f"strategy {name!r}: target-frequency factor returns missing "
-                f"columns {missing!r}."
-            )
-        # Trim to a multiple of ratio aligned to the native-frequency span
-        n_target = len(self.returns) * ratio
-        if len(target) < n_target:
-            raise ValueError(
-                f"strategy {name!r}: target factor returns have "
-                f"{len(target)} rows; need at least {n_target}."
-            )
-        target = target.iloc[:n_target]
-        return target, target.index, ratio
+            missing = [c for c in factor_cols if c not in target.columns]
+            if missing:
+                raise KeyError(
+                    f"strategy {name!r}: target-frequency factor returns missing "
+                    f"columns {missing!r}."
+                )
+            if not isinstance(target.index, pd.DatetimeIndex):
+                raise TypeError(
+                    f"strategy {name!r}: factor_returns_daily must have a "
+                    "DatetimeIndex for monthly→daily disaggregation."
+                )
+            # Calendar-aware disaggregation: align the daily factor calendar to
+            # the exact months present in the low-frequency series and use the
+            # real per-month business-day counts as irregular block sizes. This
+            # replaces the old uniform ratio=21 approximation, which failed on
+            # real (holiday-filtered) calendars where months have ~19-23 days.
+            requested_periods = native_index.to_period("M")
+            keep = target.index.to_period("M").isin(requested_periods)
+            target = target.loc[keep]
+            block_sizes = block_sizes_for_months(target.index, native_index)
+            return target, target.index, None, block_sizes
+
+        raise ValueError(
+            f"strategy {name!r}: unsupported native frequency "
+            f"{cfg.frequency.value!r} for Stage 3."
+        )
 
     def _run_stage4(
         self,
@@ -1155,11 +1215,13 @@ class FrequencyPipeline:
         samples = live_smoother.sample_posterior(n_samples=n_samples, rng=rng)
 
         # For each sample, run desmoothing → Stage 3 disaggregation
-        target_factors, target_index, ratio = self._stage3_target(name, cfg, factor_cols)
+        target_factors, target_index, ratio, block_sizes = self._stage3_target(
+            name, cfg, factor_cols, stage1_input.index
+        )
         ind_df = target_factors[factor_cols]
         s_arr = stage1_input.to_numpy(dtype=float)
         n_lf = len(s_arr)
-        n_hf = ratio * n_lf
+        n_hf = int(np.sum(block_sizes)) if block_sizes is not None else ratio * n_lf
         out = np.empty((n_samples, n_hf))
 
         # The disaggregator only depends on the desmoothed *low-frequency*
@@ -1175,7 +1237,11 @@ class FrequencyPipeline:
             )
             r_lf = pd.Series(r_lf_arr, index=stage1_input.index, name=name)
             disagg_i = disaggregator.fit(
-                r_lf, ind_df, ratio=ratio, high_frequency_index=target_index
+                r_lf,
+                ind_df,
+                ratio=ratio,
+                block_sizes=block_sizes,
+                high_frequency_index=target_index,
             )
             r_hf = disagg_i.high_frequency.to_numpy()
             if carry_native is not None:

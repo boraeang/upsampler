@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import dataclasses
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -167,3 +169,35 @@ def test_pe_multi_strategy_runs(ar1_pe_dataset):
     result = pipe.run()
     assert set(result.monthly_returns.columns) == {"us_buyout", "us_vc"}
     assert len(result.per_strategy) == 2
+
+
+# ──────────────────────────────────────────────────────────────────
+# Stage 3 alignment when the low-frequency series is shorter than the input
+# ──────────────────────────────────────────────────────────────────
+
+
+def _assert_quarters_round_trip(result, name):
+    disagg = result.per_strategy[name].disaggregation
+    monthly = disagg.high_frequency
+    quarterly_in = disagg.low_frequency_input
+    by_quarter = (1.0 + monthly).groupby(monthly.index.to_period("Q")).prod() - 1.0
+    assert list(by_quarter.index) == list(quarterly_in.index.to_period("Q"))
+    np.testing.assert_allclose(by_quarter.to_numpy(), quarterly_in.to_numpy(), atol=1e-10)
+
+
+def test_pe_pipeline_with_lag_dropping_smoother(ar1_pe_dataset):
+    """``rudin_reparam`` drops its first ``n_lags`` quarters from the desmoothed
+    series; Stage 3 must drop the matching months instead of raising a
+    row-count mismatch."""
+    returns, factors_m = _build_inputs(ar1_pe_dataset)
+    cfg = dataclasses.replace(
+        PE_PRESETS["us_large_buyout"], smoothing_model="rudin_reparam"
+    )
+    result = FrequencyPipeline(
+        returns=returns,
+        factor_returns_monthly=factors_m,
+        configs={"us_buyout": cfg},
+    ).run()
+    desmoothed = result.per_strategy["us_buyout"].desmoothed.true_returns
+    assert len(desmoothed) < len(returns)
+    _assert_quarters_round_trip(result, "us_buyout")

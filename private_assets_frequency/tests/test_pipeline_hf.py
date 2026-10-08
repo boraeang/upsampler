@@ -20,7 +20,10 @@ from private_assets_frequency.tests.conftest import (
     MAqSyntheticDataset,
     make_ma_hf_dataset,
 )
-from private_assets_frequency.utils.returns import aggregate_returns
+from private_assets_frequency.utils.returns import (
+    aggregate_returns,
+    aggregate_returns_by_blocks,
+)
 from private_assets_frequency.utils.time_series import MONTH_END_FREQ
 
 
@@ -44,23 +47,30 @@ _HF_TEST_CFG = AssetClassConfig(
 )
 
 
-def _build_hf_inputs(ds: MAqSyntheticDataset):
+def _build_hf_inputs(ds: MAqSyntheticDataset, *, drop_holidays: bool = False):
     """Wrap the conftest's MA(q) HF dataset for the pipeline.
 
     The pipeline's HF path needs daily factor returns for Stage 3 (Chow-Lin
-    monthly → daily). We synthesise them from the monthly factors by
-    splitting each monthly value evenly across the month's business days
-    and adding a tiny noise term — enough to give the disaggregator a real
-    indicator without polluting the round-trip aggregation property.
+    monthly → daily). Stage 3 is now calendar-aware: it aligns the daily factor
+    calendar to the exact months of the monthly returns and uses the real
+    per-month business-day counts as irregular blocks. So we build a genuine
+    business-day index spanning exactly those months (variable days per month).
+
+    When ``drop_holidays`` is set, a handful of business days are removed to
+    emulate a real holiday-filtered calendar — the scenario the old uniform
+    ratio=21 approximation could not describe (see the holiday test below).
     """
     rng = np.random.default_rng(0)
     returns = pd.DataFrame({"eq_ls": ds.observed_monthly})
-    n_m = len(ds.observed_monthly)
-    # Stage 3 in the runner uses ratio=21 for monthly→daily; build a daily
-    # index of exactly 21·n_m business days starting just before the first
-    # monthly anchor.
-    start = ds.observed_monthly.index[0] - pd.offsets.BDay(25)
-    daily_idx = pd.bdate_range(start=start, periods=21 * n_m)
+    monthly_index = ds.observed_monthly.index
+    first_day = monthly_index[0].to_period("M").start_time
+    last_day = monthly_index[-1]
+    daily_idx = pd.bdate_range(start=first_day, end=last_day)
+    if drop_holidays:
+        # Remove ~1 in every 37 business days (leaves every month well populated)
+        keep = np.ones(len(daily_idx), dtype=bool)
+        keep[::37] = False
+        daily_idx = daily_idx[keep]
     n_d = len(daily_idx)
     # Daily factors: independent draws scaled to be plausible at daily freq
     daily_F = pd.DataFrame(
@@ -107,22 +117,70 @@ def test_hf_round_trip_aggregation(ma_hf_dataset):
         configs={"eq_ls": _HF_TEST_CFG},
     )
     result = pipe.run()
-    # The HF Stage 3 ratio is 21 in this build (uniform-block approximation),
-    # so the round-trip aggregation is enforced by ChowLinDisaggregator.
-    desmoothed_m = result.per_strategy["eq_ls"].desmoothed.true_returns
-    daily_out = result.monthly_returns["eq_ls"]
-    # Aggregate back to monthly (ratio 21) and compare to the desmoothed monthly
-    aggregated = aggregate_returns(
-        daily_out, ratio=21, method=AggregationType.MULTIPLICATIVE
+    # Stage 3 uses irregular monthly→daily blocks (business days per month),
+    # so the round-trip must aggregate over the *actual* block sizes.
+    disagg = result.per_strategy["eq_ls"].disaggregation
+    block_sizes = disagg.diagnostics["block_sizes"]
+    assert block_sizes is not None
+    daily_out = disagg.high_frequency
+    aggregated = aggregate_returns_by_blocks(
+        daily_out, block_sizes, method=AggregationType.MULTIPLICATIVE
     )
-    # The Chow-Lin disaggregator works against the *full* desmoothed series,
-    # but we trim to align to the iterated head:
-    n_blocks = len(aggregated)
     np.testing.assert_allclose(
         aggregated.to_numpy(),
-        desmoothed_m.to_numpy()[:n_blocks],
+        disagg.low_frequency_input.to_numpy(),
         atol=1e-10,
     )
+
+
+def test_hf_pipeline_handles_holiday_filtered_calendar(ma_hf_dataset):
+    """Real calendars have a variable number of business days per month.
+
+    The old uniform ratio=21 path cut the daily factors into consecutive blocks
+    of 21 rows regardless of dates. On a real calendar those blocks drift across
+    month boundaries, so each "month" of daily output was compounded from the
+    wrong days — silently, with errors of several percent per month (or, when
+    fewer than 21·n_months days were supplied, a row-count error). The
+    calendar-aware Stage 3 must keep every daily return inside its own month.
+    """
+    returns, monthly_F, daily_F = _build_hf_inputs(ma_hf_dataset, drop_holidays=True)
+    n_m = len(returns)
+    # Precondition: the real calendar does NOT contain exactly 21 days per
+    # month, so the old uniform ratio=21 path (which demands len == 21 * n_m)
+    # cannot describe it.
+    assert len(daily_F) != 21 * n_m
+
+    result = FrequencyPipeline(
+        returns=returns,
+        factor_returns_monthly=monthly_F,
+        factor_returns_daily=daily_F,
+        configs={"eq_ls": _HF_TEST_CFG},
+    ).run()
+
+    disagg = result.per_strategy["eq_ls"].disaggregation
+    block_sizes = np.asarray(disagg.diagnostics["block_sizes"])
+    # Blocks are genuinely irregular (not all equal to 21).
+    assert block_sizes.min() != block_sizes.max()
+    assert int(block_sizes.sum()) == len(disagg.high_frequency)
+
+    aggregated = aggregate_returns_by_blocks(
+        disagg.high_frequency, block_sizes, method=AggregationType.MULTIPLICATIVE
+    )
+    np.testing.assert_allclose(
+        aggregated.to_numpy(),
+        disagg.low_frequency_input.to_numpy(),
+        atol=1e-10,
+    )
+    s34 = [v for v in result.stage_validations if "Stage 3" in v.stage][0]
+    assert s34.passed, f"Stage 3→4 failed: {s34.messages}"
+
+    # The invariant that matters: every daily return carries a date inside its
+    # own month, so compounding by *calendar month* reproduces the input.
+    daily = disagg.high_frequency
+    by_month = (1.0 + daily).groupby(daily.index.to_period("M")).prod() - 1.0
+    monthly_in = disagg.low_frequency_input
+    assert list(by_month.index) == list(monthly_in.index.to_period("M"))
+    np.testing.assert_allclose(by_month.to_numpy(), monthly_in.to_numpy(), atol=1e-10)
 
 
 def test_hf_recovers_theta_close_to_truth(ma_hf_dataset):
