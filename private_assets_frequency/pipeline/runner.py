@@ -960,8 +960,10 @@ class FrequencyPipeline:
         ``native_index`` is the datetime index of the *actual* low-frequency
         series being disaggregated (i.e. the observed returns after any
         ``dropna``), which may be shorter than ``self.returns.index`` when a
-        strategy column contains NaNs. Aligning to it keeps ``block_sizes``
-        (and the uniform ``n_target``) consistent with the low-frequency input.
+        strategy column contains NaNs. Both paths select the target-frequency
+        rows by calendar period (the months of each quarter, the business days
+        of each month), so the factor files may span a longer history than any
+        one strategy.
         """
         if not isinstance(native_index, pd.DatetimeIndex):
             raise TypeError(
@@ -982,14 +984,31 @@ class FrequencyPipeline:
                     f"strategy {name!r}: target-frequency factor returns missing "
                     f"columns {missing!r}."
                 )
-            # Trim to a multiple of ratio aligned to the native-frequency span
-            n_target = len(native_index) * ratio
-            if len(target) < n_target:
-                raise ValueError(
-                    f"strategy {name!r}: target factor returns have "
-                    f"{len(target)} rows; need at least {n_target}."
+            if not isinstance(target.index, pd.DatetimeIndex):
+                raise TypeError(
+                    f"strategy {name!r}: factor_returns_monthly must have a "
+                    "DatetimeIndex for quarterly→monthly disaggregation."
                 )
-            target = target.iloc[:n_target]
+            # Align by *date*, not by position: keep exactly the months that fall
+            # in the quarters of ``native_index``. Taking the first
+            # ``len(native_index) * 3`` rows instead silently paired the series
+            # with the wrong months whenever the factor history started earlier
+            # than the strategy (a longer factor file, or a later inception).
+            requested_quarters = native_index.to_period("Q")
+            target = target.loc[target.index.to_period("Q").isin(requested_quarters)]
+            months_per_quarter = (
+                target.index.to_period("Q")
+                .value_counts()
+                .reindex(requested_quarters, fill_value=0)
+            )
+            incomplete = months_per_quarter[months_per_quarter != ratio]
+            if len(incomplete) > 0:
+                raise ValueError(
+                    f"strategy {name!r}: factor_returns_monthly must contain "
+                    f"exactly {ratio} months for every quarter of the series; "
+                    f"{len(incomplete)} quarter(s) do not (e.g. "
+                    f"{incomplete.index[0]} has {int(incomplete.iloc[0])})."
+                )
             return target, target.index, ratio, None
 
         if cfg.frequency is Frequency.MONTHLY:

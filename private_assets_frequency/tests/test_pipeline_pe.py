@@ -22,6 +22,7 @@ from private_assets_frequency.utils.returns import (
     aggregate_returns,
     realised_volatility,
 )
+from private_assets_frequency.utils.time_series import MONTH_END_FREQ
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -200,4 +201,43 @@ def test_pe_pipeline_with_lag_dropping_smoother(ar1_pe_dataset):
     ).run()
     desmoothed = result.per_strategy["us_buyout"].desmoothed.true_returns
     assert len(desmoothed) < len(returns)
+    _assert_quarters_round_trip(result, "us_buyout")
+
+
+def test_pe_multi_strategy_with_later_inception(ar1_pe_dataset):
+    """A strategy whose history starts later (leading NaNs) is disaggregated on
+    its own quarters, not on the length of the widest column."""
+    returns, factors_m = _build_inputs(ar1_pe_dataset)
+    late = ar1_pe_dataset.observed_quarterly.copy()
+    late.iloc[:8] = np.nan
+    returns["us_vc"] = late
+    cfg = PE_PRESETS["us_large_buyout"]
+    result = FrequencyPipeline(
+        returns=returns,
+        factor_returns_monthly=factors_m,
+        configs={"us_buyout": cfg, "us_vc": cfg},
+    ).run()
+    _assert_quarters_round_trip(result, "us_buyout")
+    _assert_quarters_round_trip(result, "us_vc")
+
+
+def test_pe_monthly_factors_with_longer_history_are_aligned_by_date(ar1_pe_dataset):
+    """Monthly factors that start two years before the PE series must be matched
+    to the PE quarters by date, not by row position."""
+    returns, factors_m = _build_inputs(ar1_pe_dataset)
+    rng = np.random.default_rng(7)
+    earlier_index = pd.date_range(
+        end=factors_m.index[0] - pd.offsets.MonthEnd(1), periods=24, freq=MONTH_END_FREQ
+    )
+    earlier = pd.DataFrame(
+        {"equity_market": rng.normal(0.0, 0.04, 24)}, index=earlier_index
+    )
+    longer = pd.concat([earlier, factors_m])
+    result = FrequencyPipeline(
+        returns=returns,
+        factor_returns_monthly=longer,
+        configs={"us_buyout": PE_PRESETS["us_large_buyout"]},
+    ).run()
+    monthly = result.monthly_returns["us_buyout"].dropna()
+    assert monthly.index[0].to_period("Q") == returns.index[0].to_period("Q")
     _assert_quarters_round_trip(result, "us_buyout")
