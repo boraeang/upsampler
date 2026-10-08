@@ -49,9 +49,21 @@ viz = [
 calendar = [
     "pandas_market_calendars>=4.0",
 ]
+nowcast = [
+    # scikit-learn is required for the nowcast sub-package's signature model
+    # (ElasticNet / Ridge). Models 0-2 need nothing beyond the core deps.
+    "scikit-learn>=1.3",
+]
+signatures = [
+    # Optional signature backends. The package ships a pure-numpy backend that
+    # is used when neither is installed, and the test suite cross-checks against
+    # whichever of these is importable.
+    "iisignature>=0.24",
+]
 all = [
     "matplotlib>=3.7",
     "pandas_market_calendars>=4.0",
+    "scikit-learn>=1.3",
 ]
 dev = [
     "pytest>=7.4",
@@ -60,6 +72,7 @@ dev = [
     "ruff>=0.4",
     "matplotlib>=3.7",
     "pandas_market_calendars>=4.0",
+    "scikit-learn>=1.3",
 ]
 
 [project.urls]
@@ -90,6 +103,12 @@ filterwarnings = [
     # statsmodels and scipy emit benign deprecation noise; relax as needed
     "ignore::DeprecationWarning:statsmodels.*",
     "ignore::PendingDeprecationWarning:statsmodels.*",
+    # matplotlib's rcParams parser calls pyparsing APIs that newer pyparsing
+    # deprecates. The warnings fire at import time, inside a dependency, and are
+    # not actionable here; matched on pyparsing's own "X deprecated - use Y"
+    # phrasing so the filter stays narrow.
+    "ignore:.*deprecated - use.*:DeprecationWarning",
+    "ignore:Matplotlib created a temporary cache directory:UserWarning",
 ]
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
@@ -133,5 +152,11 @@ module = [
     "statsmodels.*",
     "pandas_market_calendars.*",
     "scipy.*",
+    # nowcast extras: scikit-learn ships no stubs; iisignature / esig are
+    # optional signature backends that may not be installed at all.
+    "sklearn.*",
+    "iisignature.*",
+    "esig.*",
+    "matplotlib.*",
 ]
 ignore_missing_imports = true

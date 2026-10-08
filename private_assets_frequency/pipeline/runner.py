@@ -43,6 +43,7 @@ Limitations
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -250,6 +251,143 @@ def _build_priors(
 # ──────────────────────────────────────────────────────────────────
 
 
+# ──────────────────────────────────────────────────────────────────
+# Provisional-row support (allow_provisional)
+# ──────────────────────────────────────────────────────────────────
+
+
+def _mask_has_provisional(mask: Any) -> bool:
+    """Whether a provisional mask marks at least one row."""
+    if mask is None:
+        return False
+    try:
+        return bool(np.asarray(pd.DataFrame(mask).to_numpy(), dtype=bool).any())
+    except (TypeError, ValueError):  # pragma: no cover - defensive
+        return False
+
+
+def _smoothing_param_vector(desmoothed: DesmoothedResult) -> np.ndarray | None:
+    r"""Rebuild the parameter vector ``SmoothingModel.desmooth`` expects.
+
+    ``DesmoothedResult.smoothing_params`` is a mapping whose keys differ by model;
+    ``desmooth`` wants a flat array. The mapping is read rather than guessed:
+
+    * ``'lambda'``                          -> ``[λ]``       (AR(1), Geltner)
+    * ``'lambda_normal'``/``'lambda_stress'`` -> ``[λ_n, λ_s]`` (threshold AR(1))
+    * ``'theta'``                           -> ``θ``         (MA(q), Rudin, Okunev-White)
+    * no-smoothing                          -> ``[0.0]``     (the filter is the identity)
+
+    Returns
+    -------
+    np.ndarray or None
+        ``None`` when the model's parameterisation is not recognised, so the
+        caller can raise with a useful message rather than mis-apply a filter.
+    """
+    params = desmoothed.smoothing_params
+    if "lambda" in params:
+        return np.asarray([float(params["lambda"])], dtype=float)
+    if "lambda_normal" in params and "lambda_stress" in params:
+        return np.asarray(
+            [float(params["lambda_normal"]), float(params["lambda_stress"])],
+            dtype=float,
+        )
+    if "theta" in params:
+        return np.asarray(params["theta"], dtype=float).reshape(-1)
+    if desmoothed.diagnostics.get("method") == "no_smoothing":
+        return np.zeros(1, dtype=float)
+    return None
+
+
+def _extend_desmoothed(
+    *,
+    smoother: Any,
+    desmoothed: DesmoothedResult,
+    full_observed: pd.Series,
+    published_index: pd.Index,
+    regime: pd.Series | None,
+    name: str,
+) -> pd.Series:
+    r"""Extend a desmoothed series over provisional quarters, without re-estimating.
+
+    The published portion of the returned series is :attr:`desmoothed.true_returns`
+    **verbatim** — it is not recomputed — so Stage 2, which is fitted on it, is
+    unaffected by the presence of provisional rows. Only the trailing provisional
+    quarters are new, and they come from applying the already-fitted filter to the
+    full observed series via :meth:`SmoothingModel.desmooth`.
+
+    Parameters
+    ----------
+    smoother
+        The fitted smoothing model.
+    desmoothed
+        Its :class:`DesmoothedResult`, fitted on published rows only.
+    full_observed
+        The Stage-1 input over published *and* provisional quarters.
+    published_index
+        Index of the rows Stage 1 was fitted on.
+    regime
+        Regime indicator over ``full_observed.index``, for threshold AR(1).
+    name
+        Strategy name, for error messages.
+
+    Returns
+    -------
+    pd.Series
+        Indexed like ``full_observed``.
+
+    Raises
+    ------
+    ValueError
+        If the model's parameterisation is not recognised, or if applying the
+        fitted filter does not reproduce the published values closely — which
+        would mean the filter is not causal and the extension is unsound.
+
+    Notes
+    -----
+    Every smoothing filter in this library is **causal** (each :math:`r_t` reads
+    :math:`s_t` and its lags only), so applying it to a longer series leaves the
+    prefix unchanged. That is asserted rather than assumed, with one documented
+    exception: the Bayesian AR(1) reports a posterior-*integrated*
+    ``true_returns``, whereas ``desmooth`` is the plug-in filter at the posterior
+    mean. The two differ by a second-order amount on the published rows, so the
+    check is a tolerance rather than an identity, and the provisional tail is
+    explicitly the plug-in estimate.
+    """
+    vector = _smoothing_param_vector(desmoothed)
+    if vector is None:
+        raise ValueError(
+            f"strategy {name!r}: allow_provisional=True, but the smoothing model "
+            f"{desmoothed.diagnostics.get('method')!r} exposes smoothing_params "
+            f"keys {sorted(desmoothed.smoothing_params)!r} that this pipeline "
+            "does not know how to feed back into desmooth(). Drop the "
+            "provisional rows, or nowcast the desmoothed series directly."
+        )
+
+    values = full_observed.to_numpy(dtype=float)
+    kwargs: dict[str, Any] = {}
+    if regime is not None and vector.size == 2:
+        kwargs["regime_indicator"] = regime.reindex(full_observed.index).to_numpy()
+    applied = np.asarray(smoother.desmooth(values, vector, **kwargs), dtype=float)
+    applied = pd.Series(applied, index=full_observed.index, name=full_observed.name)
+
+    published = desmoothed.true_returns.reindex(published_index)
+    overlap = applied.reindex(published_index)
+    scale = float(np.nanstd(published.to_numpy())) or 1.0
+    gap = float(np.nanmax(np.abs(overlap.to_numpy() - published.to_numpy())))
+    if gap > 0.25 * scale:
+        raise ValueError(
+            f"strategy {name!r}: re-applying the fitted filter to the extended "
+            f"series moves the published desmoothed values by up to {gap:.4g} "
+            f"({gap / scale:.1%} of their standard deviation). The filter is "
+            "therefore not reproducing Stage 1's output, so extending it over "
+            "provisional quarters would be unsound."
+        )
+
+    extended = applied.copy()
+    extended.loc[published_index] = published.to_numpy()
+    return extended
+
+
 @dataclass
 class FrequencyPipeline:
     """End-to-end frequency upsampling pipeline.
@@ -282,6 +420,26 @@ class FrequencyPipeline:
     regime_indicator
         Optional Series (or wide DataFrame keyed by strategy) of binary
         regime labels at the native frequency for threshold-AR(1) credit.
+    allow_provisional
+        Use provisional (nowcast) quarters appended to ``returns`` so the
+        upsampled monthly/daily output extends to the present. Default ``False``.
+
+        ``returns`` must then carry a boolean mask in
+        ``returns.attrs['provisional_mask']`` — build it with
+        :func:`private_assets_frequency.nowcast.integration.to_pipeline_returns`,
+        which is the supported way to assemble provisional inputs.
+
+        Provisional rows are **never** used to estimate anything. Stage 1
+        (desmoothing) and Stage 2 (the factor model) are fitted on published rows
+        only; the desmoothed series is then extended over the provisional
+        quarters by applying the *fitted* filter, and Stages 3-4 upsample the
+        extended series. The estimated parameters are therefore bit-for-bit
+        identical with and without provisional rows.
+
+        Every output carries the provenance: ``PipelineResult.diagnostics`` gains
+        an ``is_provisional`` block, and each
+        :class:`StrategyResult`'s ``disaggregation.diagnostics`` records which
+        high-frequency periods fall in provisional quarters.
     """
 
     returns: pd.DataFrame
@@ -298,6 +456,7 @@ class FrequencyPipeline:
     uncertainty_n_samples: int = 100
     uncertainty_percentiles: tuple[int, ...] = (5, 25, 50, 75, 95)
     uncertainty_seed: int | None = None
+    allow_provisional: bool = False
 
     def __post_init__(self) -> None:
         self.disaggregation_method = (
@@ -328,6 +487,64 @@ class FrequencyPipeline:
             raise KeyError(
                 f"configs missing entries for strategies {missing_configs!r}"
             )
+
+        # ── provisional-row bookkeeping (allow_provisional) ────────
+        self._provisional_mask: pd.DataFrame | None = None
+        if self.allow_provisional:
+            mask = self.returns.attrs.get("provisional_mask")
+            if mask is None:
+                raise ValueError(
+                    "allow_provisional=True but returns.attrs['provisional_mask'] "
+                    "is absent, so the pipeline cannot tell which rows are "
+                    "nowcasts and would estimate parameters on them. Build the "
+                    "input with "
+                    "private_assets_frequency.nowcast.integration."
+                    "to_pipeline_returns(), which sets the mask."
+                )
+            mask = pd.DataFrame(mask).reindex(
+                index=self.returns.index, columns=self.returns.columns
+            )
+            mask = mask.fillna(False).astype(bool)
+            self._provisional_mask = mask
+        elif _mask_has_provisional(self.returns.attrs.get("provisional_mask")):
+            # Only warn when the mask actually marks something. A frame built by
+            # to_pipeline_returns() always carries a mask, and an all-False one
+            # (every quarter published, or everything reconciled) is the normal
+            # steady state — warning about it would train users to ignore the
+            # warning that matters.
+            warnings.warn(
+                "returns carries a provisional_mask but allow_provisional=False, "
+                "so the provisional rows are being treated as published data and "
+                "WILL enter the desmoothing and factor estimates. Pass "
+                "allow_provisional=True, or drop the provisional rows.",
+                UserWarning,
+                stacklevel=2,
+            )
+
+    def _provisional_summary(
+        self, per_strategy: dict[str, StrategyResult]
+    ) -> dict[str, Any]:
+        """Per-strategy provisional provenance for ``PipelineResult.diagnostics``."""
+        if self._provisional_mask is None:
+            return {"enabled": False}
+        out: dict[str, Any] = {"enabled": True}
+        for name, strat in per_strategy.items():
+            diag = strat.disaggregation.diagnostics
+            out[name] = {
+                "provisional_quarters": diag.get("provisional_quarters", []),
+                "n_provisional_quarters": diag.get("n_provisional_quarters", 0),
+                "n_provisional_high_frequency": diag.get(
+                    "n_provisional_high_frequency", 0
+                ),
+                "estimation_window": diag.get("estimation_window"),
+            }
+        return out
+
+    def _provisional_for(self, name: str) -> pd.Series | None:
+        """Boolean provisional flags for one strategy, or ``None`` when unused."""
+        if self._provisional_mask is None:
+            return None
+        return self._provisional_mask[name]
 
     # ── Public API ─────────────────────────────────────────────────
 
@@ -374,6 +591,16 @@ class FrequencyPipeline:
 
         bands: UncertaintyBands | None = None
         if self.uncertainty_mode is UncertaintyMode.FULL:
+            if self.allow_provisional:
+                handler.warn(
+                    "uncertainty_mode='full' with allow_provisional=True: the "
+                    "posterior-sampling path re-runs Stages 1-3 on the full "
+                    "`returns` frame and does not honour the provisional split, "
+                    "so its bands would be estimated partly on nowcasts. Bands "
+                    "are reported for the published span only; read them with "
+                    "that caveat.",
+                    source="pipeline/uncertainty",
+                )
             bands = self._compute_uncertainty_bands(per_strategy, handler)
 
         return PipelineResult(
@@ -390,6 +617,8 @@ class FrequencyPipeline:
                 "disaggregation_method": self.disaggregation_method.value,
                 "aggregation_type": self.aggregation_type.value,
                 "uncertainty_mode": self.uncertainty_mode.value,
+                "allow_provisional": bool(self.allow_provisional),
+                "is_provisional": self._provisional_summary(per_strategy),
             },
         )
 
@@ -405,6 +634,43 @@ class FrequencyPipeline:
         if observed.isna().any():
             observed = observed.dropna()
 
+        # ── provisional split (allow_provisional) ──────────────────
+        # `observed` keeps every row so Stages 3-4 upsample the full extended
+        # series; `estimation_window` is the published prefix, and it is the only
+        # thing Stages 1-2 ever see. Splitting here rather than deeper down keeps
+        # the guarantee in one place and makes it checkable.
+        provisional = self._provisional_for(name)
+        provisional_quarters: pd.Index | None = None
+        if provisional is not None:
+            provisional = provisional.reindex(observed.index).fillna(False)
+            if provisional.any():
+                if not bool(provisional.iloc[-1]):
+                    raise ValueError(
+                        f"strategy {name!r}: provisional rows must be a trailing "
+                        "block (they extend the series past the last published "
+                        f"quarter), but the last row {observed.index[-1]} is "
+                        "marked published while earlier rows are provisional."
+                    )
+                first_provisional = int(np.argmax(provisional.to_numpy()))
+                if not bool(provisional.iloc[first_provisional:].all()):
+                    raise ValueError(
+                        f"strategy {name!r}: provisional rows must be contiguous "
+                        "at the end of the series; found a published row after "
+                        "the first provisional one."
+                    )
+                provisional_quarters = observed.index[provisional.to_numpy()]
+                estimation_window = observed.iloc[:first_provisional]
+                if estimation_window.empty:
+                    raise ValueError(
+                        f"strategy {name!r}: every row is provisional, so there "
+                        "is nothing to estimate from."
+                    )
+            else:
+                provisional = None
+        estimation_window = (
+            observed if provisional_quarters is None else estimation_window
+        )
+
         # ── Stage 0: preprocessing ─────────────────────────────────
         carry_native: pd.Series | None = None
         if cfg.preprocessing == PreprocessingKind.CARRY_MTM_DECOMPOSITION.value:
@@ -414,13 +680,20 @@ class FrequencyPipeline:
                 yld,
                 frequency=cfg.frequency,
             )
-            stage1_input = mtm.rename(name)
+            stage1_full = mtm.rename(name)
         elif cfg.preprocessing == PreprocessingKind.REPORTING_LAG_ADJUSTMENT.value:
-            stage1_input = adjust_reporting_lag(
+            stage1_full = adjust_reporting_lag(
                 observed, lag_months=cfg.reporting_lag_months
             )
         else:
-            stage1_input = observed
+            stage1_full = observed
+        # Stage 1 estimates on the published prefix only; `stage1_full` is kept so
+        # the fitted filter can be applied across the provisional tail afterwards.
+        stage1_input = (
+            stage1_full
+            if provisional_quarters is None
+            else stage1_full.loc[stage1_full.index.isin(estimation_window.index)]
+        )
 
         # ── Stage 1: desmoothing ───────────────────────────────────
         smoother = _make_smoother(cfg)
@@ -458,6 +731,22 @@ class FrequencyPipeline:
         v12 = validate_stage_1_to_2(stage1_input, desmoothed.true_returns)
         handler.record_stage_validation(v12)
 
+        # ── Extend the desmoothed series over provisional quarters ─
+        # `desmoothed` itself is left untouched, so Stage 2 below fits on the
+        # published rows exactly as it would without provisional data. Only the
+        # series handed to Stage 3 is extended, by applying the *fitted* filter —
+        # no re-estimation.
+        true_returns_extended = desmoothed.true_returns
+        if provisional_quarters is not None:
+            true_returns_extended = _extend_desmoothed(
+                smoother=smoother,
+                desmoothed=desmoothed,
+                full_observed=stage1_full,
+                published_index=stage1_input.index,
+                regime=self._regime_for(name, stage1_full.index, cfg),
+                name=name,
+            )
+
         # ── Stage 2: factor decomposition ─────────────────────────
         factor_model = FactorModel(method="ols")
         factor_fit = factor_model.fit(desmoothed.true_returns, F_native)
@@ -473,7 +762,7 @@ class FrequencyPipeline:
         # use the columns referenced in the desmoothed factor model.
         ind_df = target_factors[factor_cols]
         # If carry was decomposed, disaggregate the desmoothed MTM only
-        lf_for_disagg = desmoothed.true_returns
+        lf_for_disagg = true_returns_extended
         disagg = ChowLinDisaggregator(
             method=self.disaggregation_method,
             aggregation=self.aggregation_type,
@@ -532,6 +821,39 @@ class FrequencyPipeline:
                     **disagg.diagnostics,
                     "carry_reattached": True,
                     "additive_total_round_trip_error": add_err,
+                },
+            )
+
+        # ── Provisional provenance on the Stage 3 output ──────────
+        if provisional_quarters is not None:
+            hf_index = disagg.high_frequency.index
+            hf_quarter = pd.PeriodIndex(hf_index, freq="Q")
+            provisional_periods = pd.PeriodIndex(provisional_quarters, freq="Q")
+            hf_is_provisional = pd.Series(
+                hf_quarter.isin(provisional_periods), index=hf_index,
+                name="is_provisional",
+            )
+            disagg = DisaggregationResult(
+                high_frequency=disagg.high_frequency,
+                low_frequency_input=disagg.low_frequency_input,
+                method=disagg.method,
+                aggregation=disagg.aggregation,
+                rho=disagg.rho,
+                betas=disagg.betas,
+                sigma2=disagg.sigma2,
+                log_likelihood=disagg.log_likelihood,
+                aggregation_error=disagg.aggregation_error,
+                diagnostics={
+                    **disagg.diagnostics,
+                    "allow_provisional": True,
+                    "provisional_quarters": [str(q) for q in provisional_periods],
+                    "n_provisional_quarters": int(provisional_periods.size),
+                    "is_provisional": hf_is_provisional,
+                    "n_provisional_high_frequency": int(hf_is_provisional.sum()),
+                    "estimation_window": (
+                        str(pd.Period(stage1_input.index[0], freq="Q")),
+                        str(pd.Period(stage1_input.index[-1], freq="Q")),
+                    ),
                 },
             )
 
