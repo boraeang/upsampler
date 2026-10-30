@@ -48,6 +48,7 @@ from ..core.protocols import AggregationType, Frequency
 # ──────────────────────────────────────────────────────────────────
 
 PERIODS_PER_YEAR: dict[str, int] = {
+    Frequency.ANNUAL.value: 1,
     Frequency.QUARTERLY.value: 4,
     Frequency.MONTHLY.value: 12,
     Frequency.WEEKLY.value: 52,

@@ -38,6 +38,7 @@ class TestFrequencyEnum:
     @pytest.mark.parametrize(
         "freq, expected",
         [
+            (Frequency.ANNUAL, 1),
             (Frequency.QUARTERLY, 4),
             (Frequency.MONTHLY, 12),
             (Frequency.WEEKLY, 52),
@@ -52,7 +53,7 @@ class TestFrequencyEnum:
 
     def test_invalid_string_rejected(self):
         with pytest.raises(ValueError):
-            Frequency("annual")
+            Frequency("fortnightly")
 
 
 class TestStringEnumValues:

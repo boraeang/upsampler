@@ -33,6 +33,7 @@ import pandas as pd
 class Frequency(str, Enum):
     """Native frequency of an asset-class return series."""
 
+    ANNUAL = "annual"
     QUARTERLY = "quarterly"
     MONTHLY = "monthly"
     WEEKLY = "weekly"
@@ -44,6 +45,7 @@ class Frequency(str, Enum):
 
 
 _PERIODS_PER_YEAR: dict["Frequency", int] = {
+    Frequency.ANNUAL: 1,
     Frequency.QUARTERLY: 4,
     Frequency.MONTHLY: 12,
     Frequency.WEEKLY: 52,

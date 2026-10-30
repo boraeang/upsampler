@@ -115,10 +115,23 @@ explicitly because it is undetectable from the index, and lambda_a**(1/4) is
 badly wrong there (0.908 -> 0.976 instead of 0.60).
 
 Environment notes for this machine:
-- Only Python 3.9.7 is available, though pyproject declares >=3.10. The shipped
-  code runs on it because it avoids runtime-only 3.10 constructs; keep doing
-  that (no `isinstance(x, A | B)`, no `zip(..., strict=)`).
-- scikit-learn 1.6.1 is installed (the `nowcast` extra). `iisignature` will not
+- Anaconda was removed on 2026-10-14. The project env is now the Miniconda env
+  `upsampler`: ~/miniconda3/envs/upsampler/bin/python (Python 3.10.22, numpy
+  1.26.4, pandas 2.1.4, scipy 1.15.3, statsmodels 0.14.6, scikit-learn 1.7.2,
+  pytest 8.4.2), with the package installed editable (`pip install -e ".[dev]"`).
+  Run it outside the sandbox (it lives under the read-denied home dir).
+  Full suite there: 1123 passed / 6 skipped.
+- Keep statsmodels at 0.14.x and pytest at 8.x: statsmodels 0.15 emits an
+  acorr_lm FutureWarning and pytest 9 deprecates the class-scoped instance-method
+  fixture in tests/nowcast/test_integration.py; pyproject's filterwarnings=error
+  turns both into 37 failures/errors.
+- The old .venv points at the deleted /opt/anaconda3 and is dead; do not use it.
+- jupyter/nbclient are NOT in the `upsampler` env yet; install them before
+  re-executing the tutorial notebooks.
+- The code was validated on Python 3.9.7 before the switch and still avoids
+  runtime-only 3.10 constructs; keep doing that (no `isinstance(x, A | B)`, no
+  `zip(..., strict=)`).
+- scikit-learn is installed (the `nowcast` extra). `iisignature` will not
   build here and `esig` requires numpy>=2, which breaks pandas 2.1.4 — so the
   pure-numpy signature backend is the only live one and the library cross-check
   test must skip on import.
@@ -130,3 +143,25 @@ Spec: docs/claude_code_prompt_nowcast_module.md
 Reads the parent spec, core/protocols.py, core/config.py, and the
 ar1_bayesian / rudin_reparam modules. Only permitted change to existing
 code: the allow_provisional flag on the pipeline entry point.
+
+## Annual native frequency (added 2026-10-30)
+
+Frequency.ANNUAL ('annual', periods_per_year=1) is supported end to end:
+Stage 1 desmooths at annual frequency, Stage 3 disaggregates annual→monthly
+(ratio 12), Stage 4 daily extension runs as for quarterly. Tests:
+tests/test_pipeline_annual.py. Settled (do not re-derive):
+- Each annual timestamp t covers the 12 months ENDING in t's month, so fiscal
+  years (June, March) work. Factor months are matched by date
+  (runner._annual_block_positions), never by position or calendar year.
+  Dates < 12 months apart are refused (catches rolling-annual data sampled
+  quarterly, which must run as quarterly).
+- Chow-Lin/Litterman rho is floored at 0 for annual input
+  (runner._ANNUAL_RHO_LOWER). At 12:1 the profile-ML rho is biased to ~-0.9 on
+  i.i.d. truth and inflates monthly vol up to ~2.3x; floored, vol ratio ~0.95-1.1.
+  Quarterly keeps the full (-0.99, 0.99) grid.
+- reporting_lag_adjustment is rejected for annual (lag is applied in native
+  periods, so months would be read as years).
+- There are no annual presets. Preset lambda priors were chosen with
+  QUARTERLY smoothing in mind (annual lambda is typically lower), so review
+  lambda_prior before reusing a preset via with_overrides(native_frequency=
+  'annual'). The nowcast sub-package stays quarterly-only.

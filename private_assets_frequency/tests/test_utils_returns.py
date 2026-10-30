@@ -290,6 +290,7 @@ class TestRealisedVolatility:
 
 class TestPeriodsPerYear:
     def test_constants(self):
+        assert PERIODS_PER_YEAR["annual"] == 1
         assert PERIODS_PER_YEAR["quarterly"] == 4
         assert PERIODS_PER_YEAR["monthly"] == 12
         assert PERIODS_PER_YEAR["weekly"] == 52

@@ -46,6 +46,7 @@ from ..core.protocols import Frequency
 
 # Δt per period for known frequencies (years per period)
 _DELTA_T: dict[str, float] = {
+    Frequency.ANNUAL.value: 1.0,
     Frequency.QUARTERLY.value: 0.25,
     Frequency.MONTHLY.value: 1.0 / 12.0,
     Frequency.WEEKLY.value: 1.0 / 52.0,

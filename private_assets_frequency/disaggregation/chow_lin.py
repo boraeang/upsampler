@@ -293,6 +293,7 @@ class ChowLinDisaggregator:
             diagnostics["block_sizes"] = [int(s) for s in block_sizes_norm]
         if rho_hat is not None:
             diagnostics["rho"] = float(rho_hat)
+            diagnostics["rho_bounds"] = (float(self.rho_lower), float(self.rho_upper))
 
         out = pd.Series(y_hf_arr, index=hf_index, name=low_frequency.name)
         return DisaggregationResult(

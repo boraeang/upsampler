@@ -227,7 +227,7 @@ class TestAssetClassConfigValidation:
 
     def test_unknown_frequency_rejected(self):
         with pytest.raises(ValueError, match="native_frequency"):
-            _ar1_config(native_frequency="annual")
+            _ar1_config(native_frequency="fortnightly")
 
     def test_unknown_preprocessing_rejected(self):
         with pytest.raises(ValueError, match="preprocessing"):

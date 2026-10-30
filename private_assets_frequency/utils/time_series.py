@@ -22,8 +22,9 @@ throughout the pipeline:
 Frequency aliases
 -----------------
 The library follows the ``Frequency`` enum in :mod:`core.protocols`:
-``'quarterly' | 'monthly' | 'weekly' | 'daily'``. ``infer_frequency`` is
-robust to either pandas 1.x (``'M'``, ``'Q'``) or 2.x (``'ME'``, ``'QE'``)
+``'annual' | 'quarterly' | 'monthly' | 'weekly' | 'daily'``. ``infer_frequency``
+is robust to either pandas 1.x (``'M'``, ``'Q'``, ``'A'``) or 2.x (``'ME'``,
+``'QE'``, ``'YE'``)
 inferred frequency strings, plus a fallback based on median day-spacing.
 """
 
@@ -41,19 +42,22 @@ from .returns import compound_returns
 # Pandas-version-compatible frequency aliases
 # ──────────────────────────────────────────────────────────────────
 #
-# Pandas 2.2 renamed the month-end / quarter-end aliases from 'M' / 'Q' to
-# 'ME' / 'QE' and emits a FutureWarning when the old names are used. Older
-# 2.x releases (2.0, 2.1) only recognise the short forms. We pick the right
-# alias at import time so the rest of the library can use a stable name.
+# Pandas 2.2 renamed the month-end / quarter-end / year-end aliases from
+# 'M' / 'Q' / 'A' to 'ME' / 'QE' / 'YE' and emits a FutureWarning when the old
+# names are used. Older 2.x releases (2.0, 2.1) only recognise the short forms.
+# We pick the right alias at import time so the rest of the library can use a
+# stable name.
 
 _PD_VERSION = tuple(int(p) for p in pd.__version__.split(".")[:2])
 
 if _PD_VERSION >= (2, 2):
     MONTH_END_FREQ = "ME"
     QUARTER_END_FREQ = "QE"
+    YEAR_END_FREQ = "YE"
 else:
     MONTH_END_FREQ = "M"
     QUARTER_END_FREQ = "Q"
+    YEAR_END_FREQ = "A"
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -84,6 +88,8 @@ def infer_frequency(index: pd.DatetimeIndex) -> Frequency:
     inferred = pd.infer_freq(index)
     if inferred is not None:
         prefix = inferred.split("-")[0]  # strip year-end suffix like 'QE-DEC'
+        if prefix in ("A", "Y", "YE", "BA", "BY", "BYE", "AS", "YS", "BAS", "BYS"):
+            return Frequency.ANNUAL
         if prefix in ("Q", "QE", "BQ", "BQE", "QS", "BQS"):
             return Frequency.QUARTERLY
         if prefix in ("M", "ME", "BM", "BME", "MS", "BMS"):
@@ -98,6 +104,8 @@ def infer_frequency(index: pd.DatetimeIndex) -> Frequency:
     if len(deltas) == 0:
         raise ValueError("infer_frequency: cannot compute deltas (single observation).")
     median = float(np.median(deltas))
+    if 350.0 <= median <= 380.0:
+        return Frequency.ANNUAL
     if 80.0 <= median <= 100.0:
         return Frequency.QUARTERLY
     if 27.0 <= median <= 32.0:
@@ -118,7 +126,13 @@ def is_period_end_aligned(index: pd.DatetimeIndex, frequency: Frequency) -> bool
     Useful as a sanity assertion in the pipeline: quarterly factor returns
     that aren't quarter-end-aligned are a common silent source of off-by-one
     errors when joining with PE returns.
+
+    Annual series are only required to be *month*-end aligned: a fiscal year
+    may close in any month (June, March, ...), so a December-only check would
+    reject legitimate data.
     """
+    if frequency is Frequency.ANNUAL:
+        return bool((index == index + pd.offsets.MonthEnd(0)).all())
     if frequency is Frequency.QUARTERLY:
         return bool((index == index + pd.offsets.QuarterEnd(0)).all())
     if frequency is Frequency.MONTHLY:
@@ -381,6 +395,7 @@ def trim_to_index(
 __all__ = [
     "MONTH_END_FREQ",
     "QUARTER_END_FREQ",
+    "YEAR_END_FREQ",
     "align_factors_to_returns",
     "common_index",
     "compound_returns_panel",
