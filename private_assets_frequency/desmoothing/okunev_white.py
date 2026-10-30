@@ -349,7 +349,7 @@ class OkunevWhiteSmoothing:
         the requested depth was not reached. Default ``WARN``.
     periods_per_year
         Annualisation factor. If ``None`` (default) it is inferred from the
-        return index frequency (quarterly → 4, monthly → 12, weekly → 52,
+        return index frequency (annual → 1, quarterly → 4, monthly → 12, weekly → 52,
         daily → 252).
     n_bootstrap
         If ``> 0``, number of moving-block bootstrap resamples used to build a
@@ -1032,6 +1032,8 @@ def _infer_periods_per_year(index: pd.Index) -> int:
         freq = index.freq or pd.infer_freq(index)
         if freq is not None:
             token = str(freq).upper()
+            if token.startswith(("A", "Y", "BA", "BY")):
+                return Frequency.ANNUAL.periods_per_year
             if token.startswith(("Q", "BQ")) or "Q" in token[:3]:
                 return Frequency.QUARTERLY.periods_per_year
             if token.startswith(("M", "BM", "MS")) or "M" in token[:3]:
@@ -1043,6 +1045,8 @@ def _infer_periods_per_year(index: pd.Index) -> int:
         if len(index) >= 2:
             spacings = np.diff(index.view("i8")) / 1e9 / 86400.0
             median_days = float(np.median(spacings))
+            if median_days >= 300:
+                return Frequency.ANNUAL.periods_per_year
             if median_days >= 80:
                 return Frequency.QUARTERLY.periods_per_year
             if median_days >= 25:

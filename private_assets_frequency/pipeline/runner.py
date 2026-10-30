@@ -19,12 +19,13 @@ High-level flow per strategy
                                       output consistent across models).
     Stage 3 (temporal disaggregation) — :class:`ChowLinDisaggregator` to the
                                       target frequency: quarterly→monthly for
-                                      PE / RE / infra / credit, monthly→daily
-                                      for HF.
+                                      PE / RE / infra / credit, annual→monthly
+                                      for annual-only asset classes,
+                                      monthly→daily for HF.
     Stage 4 (daily extension)       — :class:`KalmanDailySmoother` if daily
-                                      factors are supplied for quarterly-native
-                                      strategies. Skipped for HF (already
-                                      daily after Stage 3).
+                                      factors are supplied for quarterly- or
+                                      annual-native strategies. Skipped for HF
+                                      (already daily after Stage 3).
 
 Validation gates and sanity anchors are run at the end of each stage and
 collected on the result; the :class:`FallbackHandler` decides whether to
@@ -255,6 +256,94 @@ def _build_priors(
 # ──────────────────────────────────────────────────────────────────
 # Provisional-row support (allow_provisional)
 # ──────────────────────────────────────────────────────────────────
+
+
+_MONTHS_PER_YEAR = 12
+
+# Lower bound on the Chow-Lin / Litterman ρ grid for annual→monthly Stage 3.
+# With one constraint per twelve unknowns the profile likelihood barely
+# identifies ρ and its maximiser is biased hard towards the negative bound: on
+# i.i.d. monthly truth the median estimate is ≈ -0.9 (it is ≈ 0 at 3:1). A
+# monthly ρ near -1 spreads each year's residual as a saw-tooth, inflating
+# monthly volatility (up to ~2x in simulation) and degrading the path. Negative
+# monthly residual autocorrelation has no economic rationale for these assets,
+# so the grid is floored at 0 for annual input; quarterly keeps the full grid.
+_ANNUAL_RHO_LOWER = 0.0
+
+
+def _annual_block_positions(
+    month_index: pd.DatetimeIndex, native_index: pd.DatetimeIndex
+) -> np.ndarray:
+    """Map each monthly timestamp to the annual period of ``native_index`` it falls in.
+
+    An annual observation stamped ``t`` covers the twelve calendar months ending
+    with the month of ``t``. The anchor is taken from the series itself rather
+    than from a calendar year, so fiscal years closing in June or March work the
+    same way as December year-ends.
+
+    Parameters
+    ----------
+    month_index
+        Timestamps of the monthly rows (any day within the month).
+    native_index
+        Annual period-end timestamps, strictly increasing and at least twelve
+        months apart.
+
+    Returns
+    -------
+    np.ndarray
+        Integer array of length ``len(month_index)``: the position in
+        ``native_index`` of the year containing each month, or ``-1`` for months
+        outside every year.
+
+    Raises
+    ------
+    ValueError
+        If ``native_index`` is not increasing or two consecutive dates are less
+        than twelve months apart, which would make the annual periods overlap.
+    """
+    ends = native_index.to_period("M").asi8
+    if len(ends) > 1:
+        spacing = np.diff(ends)
+        if (spacing < _MONTHS_PER_YEAR).any():
+            k = int(np.argmax(spacing < _MONTHS_PER_YEAR))
+            raise ValueError(
+                "annual returns must be at least 12 months apart, but "
+                f"{native_index[k].date()} and {native_index[k + 1].date()} are "
+                f"{int(spacing[k])} months apart. A rolling-annual series sampled "
+                "quarterly is not annual data: run it as quarterly instead."
+            )
+    months = month_index.to_period("M").asi8
+    pos = np.searchsorted(ends, months, side="left")
+    inside = pos < len(ends)
+    inside[inside] &= (ends[pos[inside]] - months[inside]) < _MONTHS_PER_YEAR
+    return np.where(inside, pos, -1)
+
+
+def _annual_monthly_rows(
+    name: str, monthly: pd.DataFrame, native_index: pd.DatetimeIndex
+) -> tuple[pd.DataFrame, np.ndarray]:
+    """Select the monthly rows of each annual period and check every year is complete.
+
+    Returns ``(rows, block)`` where ``rows`` holds, in date order, exactly the
+    twelve months of every year in ``native_index`` and ``block[i]`` is the
+    position in ``native_index`` of the year containing ``rows.iloc[i]``.
+    """
+    monthly = monthly.sort_index()
+    block = _annual_block_positions(monthly.index, native_index)
+    keep = block >= 0
+    rows, block = monthly.loc[keep], block[keep]
+    counts = np.bincount(block, minlength=len(native_index))
+    incomplete = np.flatnonzero(counts != _MONTHS_PER_YEAR)
+    if incomplete.size > 0:
+        k = int(incomplete[0])
+        raise ValueError(
+            f"strategy {name!r}: factor_returns_monthly must contain exactly "
+            f"{_MONTHS_PER_YEAR} months for every year of the annual series; "
+            f"{incomplete.size} year(s) do not (e.g. the year ending "
+            f"{native_index[k].date()} has {int(counts[k])})."
+        )
+    return rows, block
 
 
 def _mask_has_provisional(mask: Any) -> bool:
@@ -700,7 +789,7 @@ class FrequencyPipeline:
         smoother = _make_smoother(cfg)
         regime = self._regime_for(name, stage1_input.index, cfg)
         priors = _build_priors(cfg, regime_indicator=regime)
-        factors_native = self._factors_at(cfg.frequency)
+        factors_native = self._factors_at(cfg.frequency, stage1_input.index, name)
         if factors_native is None:
             raise ValueError(
                 f"no factor returns supplied at native frequency "
@@ -755,9 +844,9 @@ class FrequencyPipeline:
         handler.record_stage_validation(v23)
 
         # ── Stage 3: temporal disaggregation ──────────────────────
-        # For PE / RE / infra / credit (quarterly native): produce monthly
-        # using factor_returns_monthly. For HF (monthly native): produce
-        # daily using factor_returns_daily.
+        # For PE / RE / infra / credit (quarterly native) and annual-native
+        # strategies: produce monthly using factor_returns_monthly. For HF
+        # (monthly native): produce daily using factor_returns_daily.
         # Stage 3 spans every native period handed to it: the published rows,
         # plus any provisional quarters appended by `_extend_desmoothed`.
         stage3_native_index = (
@@ -785,10 +874,7 @@ class FrequencyPipeline:
                 block_sizes = block_sizes[n_dropped:]
             ind_df = ind_df.iloc[hf_drop:]
             target_index = target_index[hf_drop:]
-        disagg = ChowLinDisaggregator(
-            method=self.disaggregation_method,
-            aggregation=self.aggregation_type,
-        ).fit(
+        disagg = self._make_disaggregator(cfg).fit(
             lf_for_disagg,
             ind_df,
             ratio=ratio,
@@ -851,11 +937,21 @@ class FrequencyPipeline:
         # ── Provisional provenance on the Stage 3 output ──────────
         if provisional_quarters is not None:
             hf_index = disagg.high_frequency.index
-            hf_quarter = pd.PeriodIndex(hf_index, freq="Q")
-            provisional_periods = pd.PeriodIndex(provisional_quarters, freq="Q")
+            if cfg.frequency is Frequency.ANNUAL:
+                # Fiscal years need not be calendar years, so label each one by
+                # its closing month and match high-frequency rows by block.
+                block = _annual_block_positions(hf_index, stage3_native_index)
+                provisional_pos = stage3_native_index.get_indexer(provisional_quarters)
+                hf_flags = np.isin(block, provisional_pos)
+                provisional_periods = pd.PeriodIndex(provisional_quarters, freq="M")
+                window_freq = "M"
+            else:
+                hf_quarter = pd.PeriodIndex(hf_index, freq="Q")
+                provisional_periods = pd.PeriodIndex(provisional_quarters, freq="Q")
+                hf_flags = hf_quarter.isin(provisional_periods)
+                window_freq = "Q"
             hf_is_provisional = pd.Series(
-                hf_quarter.isin(provisional_periods), index=hf_index,
-                name="is_provisional",
+                hf_flags, index=hf_index, name="is_provisional",
             )
             disagg = DisaggregationResult(
                 high_frequency=disagg.high_frequency,
@@ -875,8 +971,8 @@ class FrequencyPipeline:
                     "is_provisional": hf_is_provisional,
                     "n_provisional_high_frequency": int(hf_is_provisional.sum()),
                     "estimation_window": (
-                        str(pd.Period(stage1_input.index[0], freq="Q")),
-                        str(pd.Period(stage1_input.index[-1], freq="Q")),
+                        str(pd.Period(stage1_input.index[0], freq=window_freq)),
+                        str(pd.Period(stage1_input.index[-1], freq=window_freq)),
                     ),
                 },
             )
@@ -884,7 +980,7 @@ class FrequencyPipeline:
         # ── Stage 4: optional daily extension ─────────────────────
         daily_result: DailyDisaggregationResult | None = None
         if (
-            cfg.frequency is Frequency.QUARTERLY
+            cfg.frequency in (Frequency.QUARTERLY, Frequency.ANNUAL)
             and self.factor_returns_daily is not None
         ):
             try:
@@ -922,7 +1018,44 @@ class FrequencyPipeline:
 
     # ── Helpers ────────────────────────────────────────────────────
 
-    def _factors_at(self, frequency: Frequency) -> pd.DataFrame | None:
+    def _make_disaggregator(self, cfg: AssetClassConfig) -> ChowLinDisaggregator:
+        if cfg.frequency is Frequency.ANNUAL:
+            return ChowLinDisaggregator(
+                method=self.disaggregation_method,
+                aggregation=self.aggregation_type,
+                rho_lower=_ANNUAL_RHO_LOWER,
+            )
+        return ChowLinDisaggregator(
+            method=self.disaggregation_method,
+            aggregation=self.aggregation_type,
+        )
+
+    def _factors_at(
+        self,
+        frequency: Frequency,
+        native_index: pd.DatetimeIndex | None = None,
+        name: str = "",
+    ) -> pd.DataFrame | None:
+        if frequency is Frequency.ANNUAL:
+            # Compound the twelve months of each year in ``native_index``. Done
+            # by date, not by position, so a fiscal year ending in June lines up
+            # with July-June factor months whatever month the factor file ends in.
+            if self.factor_returns_monthly is None:
+                return None
+            if native_index is None:
+                raise ValueError("annual factor aggregation needs the native index.")
+            from ..utils.returns import aggregate_returns_by_blocks
+
+            rows, block = _annual_monthly_rows(
+                name, self.factor_returns_monthly, native_index
+            )
+            annual = aggregate_returns_by_blocks(
+                rows,
+                np.bincount(block, minlength=len(native_index)),
+                method=self.aggregation_type,
+            )
+            annual.index = native_index
+            return annual
         if frequency is Frequency.QUARTERLY:
             # No quarterly factor table; we resample monthly→quarterly on demand.
             if self.factor_returns_monthly is None:
@@ -952,7 +1085,9 @@ class FrequencyPipeline:
         """Return ``(indicator_df, target_index, ratio, block_sizes)`` for Stage 3.
 
         For quarterly-native strategies (PE / RE / infra / credit) the target is
-        monthly with a uniform ``ratio=3`` and ``block_sizes=None``. For HF
+        monthly with a uniform ``ratio=3`` and ``block_sizes=None``; for
+        annual-native strategies it is monthly with ``ratio=12``, each year being
+        the twelve months ending in the month of its timestamp. For HF
         (monthly-native) the target is daily on a *real* business-day calendar:
         ``ratio`` is ``None`` and ``block_sizes`` gives the variable number of
         business days in each month of ``native_index``.
@@ -1010,6 +1145,27 @@ class FrequencyPipeline:
                     f"{incomplete.index[0]} has {int(incomplete.iloc[0])})."
                 )
             return target, target.index, ratio, None
+
+        if cfg.frequency is Frequency.ANNUAL:
+            if self.factor_returns_monthly is None:
+                raise ValueError(
+                    f"strategy {name!r}: annual→monthly disaggregation "
+                    "needs factor_returns_monthly."
+                )
+            target = self.factor_returns_monthly
+            missing = [c for c in factor_cols if c not in target.columns]
+            if missing:
+                raise KeyError(
+                    f"strategy {name!r}: target-frequency factor returns missing "
+                    f"columns {missing!r}."
+                )
+            if not isinstance(target.index, pd.DatetimeIndex):
+                raise TypeError(
+                    f"strategy {name!r}: factor_returns_monthly must have a "
+                    "DatetimeIndex for annual→monthly disaggregation."
+                )
+            target, _ = _annual_monthly_rows(name, target, native_index)
+            return target, target.index, _MONTHS_PER_YEAR, None
 
         if cfg.frequency is Frequency.MONTHLY:
             if self.factor_returns_daily is None:
@@ -1224,7 +1380,7 @@ class FrequencyPipeline:
         regime = self._regime_for(name, stage1_input.index, cfg)
         priors = _build_priors(cfg, regime_indicator=regime)
         factor_cols = list(cfg.beta_priors)
-        factors_native = self._factors_at(cfg.frequency)
+        factors_native = self._factors_at(cfg.frequency, stage1_input.index, name)
         F_native = factors_native[factor_cols].reindex(stage1_input.index)
         live_smoother.fit(stage1_input, F_native, priors)
         if not hasattr(live_smoother, "sample_posterior"):
@@ -1246,10 +1402,7 @@ class FrequencyPipeline:
         # The disaggregator only depends on the desmoothed *low-frequency*
         # series (it re-fits its own β internally). We re-run Chow-Lin per
         # sample with a fresh desmoothed series at the sampled λ / θ.
-        disaggregator = ChowLinDisaggregator(
-            method=self.disaggregation_method,
-            aggregation=self.aggregation_type,
-        )
+        disaggregator = self._make_disaggregator(cfg)
         for i in range(n_samples):
             r_lf_arr = self._desmooth_at_sample(
                 s_arr, samples, i, cfg.smoothing_kind, live_smoother
@@ -1303,8 +1456,8 @@ class FrequencyPipeline:
         if self.public_proxies is None or name not in self.public_proxies:
             return {}
         proxy = self.public_proxies[name]
-        if cfg.frequency is Frequency.QUARTERLY:
-            # Disaggregated output is at monthly (ratio 3); proxy assumed monthly
+        if cfg.frequency in (Frequency.QUARTERLY, Frequency.ANNUAL):
+            # Disaggregated output is monthly (ratio 3 or 12); proxy assumed monthly
             periods = 12
         else:
             # Output is daily (ratio 21); proxy assumed daily

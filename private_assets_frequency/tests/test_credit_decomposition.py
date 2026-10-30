@@ -54,7 +54,7 @@ class TestDecomposeCreditReturn:
         total = pd.Series(np.zeros(4), index=idx)
         yld = pd.Series(np.zeros(4), index=idx)
         with pytest.raises(ValueError):
-            decompose_credit_return(total, yld, frequency="annual")
+            decompose_credit_return(total, yld, frequency="fortnightly")
 
     def test_yield_misalignment_raises(self):
         idx_total = pd.date_range("2020-03-31", periods=4, freq=QUARTER_END_FREQ)

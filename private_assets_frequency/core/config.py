@@ -368,6 +368,17 @@ class AssetClassConfig:
             raise ValueError(
                 "preprocessing='reporting_lag_adjustment' requires reporting_lag_months >= 1."
             )
+        # adjust_reporting_lag shifts by whole *periods*, so on an annual series
+        # a lag of "3 months" would silently become a lag of three years.
+        if (
+            self.preprocessing == PreprocessingKind.REPORTING_LAG_ADJUSTMENT.value
+            and self.native_frequency == Frequency.ANNUAL.value
+        ):
+            raise ValueError(
+                "preprocessing='reporting_lag_adjustment' is not supported for "
+                "native_frequency='annual': the lag is applied in native periods, "
+                "so reporting_lag_months would be read as years."
+            )
 
     # ── convenience accessors ───────────────────────────────────────────
 
